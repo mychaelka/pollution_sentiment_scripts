@@ -9,13 +9,13 @@ from datetime import date
 
 
 # credentials
-NAME = "_ynza_"
-PSWD = "scraperpswd"
+NAME = ""
+PSWD = ""
 TEST_IDS = ['617936021947305985', '617936027118903296', '617936177941872640', '617936302890196992',
             '617936382804275200', '617936395940798464', '617936537846738944', '617936557522161664']
 TEST_ID = '1689206501255081984'
 TEST_USERNAME = 'random'
-IDS_PATH = '/home/mysa/phd/pollution/sentiment/data/gesis/state_id_2015-07/0607/all_shuffled.txt'
+IDS_PATH = ''
 
 
 def load_ids(path):
