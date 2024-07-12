@@ -22,10 +22,9 @@ data <- merge(vader, roberta, by = '...1') %>%
 rm(vader, roberta, bertweet, topics)
 gc()
 
-## filter out bots
-bots <- read_csv("../data/bot_usernames.csv")
-
-data <- data |> filter(!(username %in% bots$username))
+## filter out bots (do not delete the bots data!! Need them for placebo tests)
+#bots <- read_csv("../data/bot_usernames.csv")
+#data <- data |> filter(!(username %in% bots$username))
 
 data <- data %>% mutate(id = `...1`) %>% 
   dplyr::select(-geo_available,-`...1`) %>%
@@ -35,15 +34,10 @@ data <- data %>% mutate(id = `...1`) %>%
     coords = c("lat", "lon"), 
     crs = 4326)
 
-#usa_states <- st_read("../data/USA_shapefiles/States_shapefile/")
 usa_counties <- st_read("../data/USA_shapefiles/counties/") %>% 
   dplyr::select(NAME, STATE_NAME, STATE_FIPS, CNTY_FIPS, POP2010) %>% 
   filter(STATE_NAME != "Alaska") %>% 
   filter(STATE_NAME != "Hawaii")
-
-# remove Alaska and Hawaii from states shapefile
-#usa_states <- usa_states[-c(2,12),] %>% 
-#  dplyr::select(State_Code, State_Name)
 
 sf_use_s2(FALSE)
 data <- st_intersection(data, usa_counties)
@@ -69,17 +63,14 @@ dewpoint <- st_as_sf(weather[2]) %>% parse_nums() %>%
 
 pm25 <- st_as_sf(ecmwf[6]) %>% parse_nums() %>% 
   mutate(across(`2015-07-01`:`2015-07-31 21:00:00`, ~.*1000000000)) %>%
-  #dplyr::select(`2015-07-05`:`2015-07-08 03:00:00`) %>% 
   dplyr::mutate(
     id = row_number()
   )
 aod550 <- st_as_sf(ecmwf[8]) %>% parse_nums() %>%
-  #dplyr::select(`2015-07-05`:`2015-07-08 03:00:00`) %>%
   dplyr::mutate(
     id = row_number()
   )
 so2 <- st_as_sf(ecmwf[22]) %>% parse_nums() %>%
-  #dplyr::select(`2015-07-05`:`2015-07-08 03:00:00`) %>%
   dplyr::mutate(
     id = row_number()
   )
@@ -200,8 +191,6 @@ full_data <-
       )
   )
 
-
-load("workspace.RData")
 
 full_data <- full_data %>% 
   left_join(

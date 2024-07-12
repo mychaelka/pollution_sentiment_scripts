@@ -96,6 +96,10 @@ count_users <- function(dt, thresholds, time_window) {
 time_windows <- c(2, 5, 10, 60)
 thresholds <- c(2, 5, 10, 50, 100)
 
+# tweeted more than 50 times a day
+time_windows <- 24*60*60
+thresholds <- 50
+
 # Initialize a list to store results for each time window
 all_results <- data.table(time_window=integer(),
                           threshold=integer(), 
@@ -116,7 +120,21 @@ for (window in time_windows) {
 
 # Combine all results into a single dataframe
 write_csv(all_results, "../data/bots_all.csv")
+write_csv(all_results, "../data/day_bots.csv")
 
+# filter users that tweeted more than 50 times in 1 day
+data$date <- as.Date(data$timestamp)
+bots <- data |>
+  group_by(username, date) |>
+  summarize(count = n()) |>
+  filter(count > 50) |> distinct(username)
+
+
+write_csv(bots, "../data/day_bot_usernames.csv")
+bots <- data |> filter(username %in% bots$username)
+mean(bots$vader_compound)
+mean(bots$bertweet_neutral)
+mean(bots$roberta_neutral)
 
 # filter data to only show bots -- 5,5 seems like a sweet spot, others start catching more and more regular users
 time_window <- 5
@@ -126,7 +144,7 @@ setorder(data, username, timestamp)
 
 bots <- data |> 
   mutate(time_diff = abs(timestamp - lag(timestamp, tweet_count - 1))) |>
-  filter(!is.na(time_diff) & time_diff <= time_window) |>
+  filter((!is.na(time_diff)) & time_diff <= time_window) |>
   ungroup() |> distinct(username)
 
 write_csv(bots, "../data/bot_usernames.csv")

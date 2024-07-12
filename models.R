@@ -4,9 +4,11 @@ library(lutz)
 library(sf)
 library(readr)
 library(lubridate)
+library(data.table)
 
 load("../data/full_data_counties.RData")
 
+# create local timestamps (the ones from data are in UTC)
 full_data$timezone <- tz_lookup(full_data, method = "accurate")
 full_data$local_time <- with_tz(full_data$timestamp, tzone = full_data$timezone)
 full_data$local_timebin <- with_tz(full_data$time_bin, tzone = full_data$timezone)
@@ -18,58 +20,39 @@ full_data <- full_data %>%
   mutate(lon = st_coordinates(.)[,1],
          lat = st_coordinates(.)[,2])
 
-full_data <- full_data |> dplyr::select(!(text))
+full_data <- full_data |> dplyr::select(!(text)) %>% st_drop_geometry()
 
-## standardize data (?)
-full_data <- full_data %>% mutate(across(c(vader_compound:youth_._student_life,
-                                           pm25), ~ scale(.)[,1]))
-
-
-full_data <- full_data %>% st_drop_geometry()
-
-# cut pm25 into bins (does not make sense with standardized variables)
+# cut pm25 into bins
 full_data <- full_data %>% 
   mutate(
     pm25_cat = cut(pm25, breaks = c(seq(from = 0, to = 150, by = 30),Inf), include.lowest = TRUE)
   )
 
-# remove bots
+# standardize data - for nonparametric regression, do not standardize pm2.5!
+scaled <- data %>% dplyr::select(date, NAME, day, day_hour, username, pm25_cat, pm25,
+                                 vader_compound, roberta_positive,
+                                 roberta_negative, bertweet_positive,
+                                 bertweet_negative) %>% 
+  mutate(across(c(pm25:bertweet_negative), ~ (.-mean(.)) / sd(.))) %>% 
+  drop_na() 
+
+# remove bots from data
 bot_usernames <- read_csv("../data/bot_usernames.csv")
-full_data <- full_data %>% filter(!(username %in% bot_usernames$username))
+day_bot_usernames <- read_csv("../data/day_bot_usernames.csv")
+bots <- full_data %>% filter(username %in% bot_usernames$username)
+day_bots <- full_data %>% filter(username %in% day_bot_usernames$username)
+all_bots <- rbindlist(list(bots, day_bots))
+data <- full_data %>% filter(!(username %in% all_bots$username))
 
 # day of week indicator
-full_data$day <- wday(full_data$local_time)
-full_data$day_hour <- hour(full_data$local_time)
+data$day <- lubridate::wday(data$local_time)
+data$day_hour <- lubridate::hour(data$local_time)
 
 # night data -- too few tweets during the night
-full_data$night <- if_else(hour(full_data$local_time) >= 22 | hour(full_data$local_time) <= 6, 1, 0)
-night <- full_data %>% filter(hour(local_time) >= 22 | hour(local_time) <= 6)
-
-##### FILTERING CATEGORIES
-sports <- data %>% 
-  filter(sports > 0.5)
-
-celebrities <- data %>% 
-  filter(celebrity_._pop_culture > 0.5)
-
-arts_culture <- data %>% 
-  filter(arts_._culture > 0.5)
-
-food <- data %>% 
-  filter(food_._dining > 0.5)
-
-news_concern <- data %>% 
-  filter(news_._social_concern > 0.5)
-
-travel <- data %>% 
-  filter(travel_._adventure > 0.5)
-
-without_sport <- data %>% 
-  group_by(username, timestamp) %>% filter(sports < 0.5) %>% ungroup()
-
-night_without_sport <- night %>% 
-  group_by(username, timestamp) %>% filter(sports < 0.5) %>% ungroup()
-
+data$night <- if_else(lubridate::hour(data$local_time) >= 22 | 
+                             lubridate::hour(data$local_time) <= 6, 1, 0)
+night <- data %>% filter(lubridate::hour(local_time) >= 22 | 
+                                lubridate::hour(local_time) <= 6)
 
 ### CORRELATION BETWEEN NUMBER OF TWEETS AND PM25
 grouped <- data %>% st_drop_geometry() %>% 
@@ -79,9 +62,9 @@ grouped <- data %>% st_drop_geometry() %>%
 cor(grouped$count, grouped$pm25, use = "complete.obs")
 
 
-### CORRELATION BETWEEN SENTIMENT MEASURES
-cor(full_data$roberta_positive, full_data$bertweet_positive, use = "complete.obs")
-cor(full_data$roberta_negative, full_data$bertweet_negative, use = "complete.obs")
+### CORRELATION BETWEEN SENTIMENT MEASURES - do this on data with bots 
+cor(full_data[,c("vader_compound", "roberta_positive", 
+                 "roberta_negative", "bertweet_positive", "bertweet_negative")])
 
 # bertweet binarizes the data much more than roberta 
 full_data[sample(nrow(full_data), 100000), ] %>% ggplot(aes(x=roberta_positive, y=bertweet_positive)) +
@@ -124,10 +107,13 @@ ggplot(counts_negative, aes(roberta_negative_cat, bertweet_negative_cat, fill = 
 
 
 ### MODELS
+#save(full_data, data, all_bots, night, file="../data/models.RData")
+load("../data/models.RData")
+
 ## County + date + username, cluster by county
 feols(
   c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
-  data = full_data,
+  data = data,
   cluster = "NAME"
 ) |>
   etable()
@@ -164,6 +150,14 @@ feols(
 ) |>
   etable()
 
+## County + date + hour + username + topic, cluster by county
+feols(
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour + username + main_label,
+  data = full_data,
+  cluster = "NAME"
+) |>
+  etable()
+
 # sentiment during night -- robustness check to filter out the visibility problem
 feols(
   c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 | NAME + date,
@@ -172,10 +166,19 @@ feols(
 ) |>
   etable()
 
+# bots -- placebo test
+feols(
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
+  data = all_bots,
+  cluster = "NAME"
+) |>
+  etable()
+
 # nonlinearity -- pm25 categories
 feols(
   c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat | NAME + date + day_hour + username,
-  data = full_data
+  data = scaled,
+  cluster = "NAME"
 ) |>
   etable()
 
@@ -187,7 +190,8 @@ full_data <- full_data %>%
 
 feols(
   c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat | NAME + date + day_hour + username,
-  data = full_data
+  data = full_data,
+  cluster = "NAME"
 ) |>
   etable()
 
@@ -200,7 +204,6 @@ full_data$main_label <- lapply(full_data$label, function(x) {
   ifelse(is.na(aux[[1]][1]), "'no_topic'", aux[[1]][1])
 }) %>% unlist()
 
-
 feols(
   c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 * main_label | NAME + date + day_hour + username,
   data = full_data
@@ -211,50 +214,91 @@ feols(
 # individual categories
 # sports
 feols(
-  c(bertweet_positive, bertweet_negative, vader_compound, 
-    roberta_positive, roberta_negative) ~ pm25 | local_timebin + State_Code,
-  data = sports
+  c(vader_compound, 
+    roberta_positive, roberta_negative, 
+    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour,
+  data = full_data %>% filter(sports > 0.5),
+  cluster = "NAME"
 ) |>
   etable()
 
 # celebrities
 feols(
-  c(bertweet_positive, bertweet_negative, vader_compound, 
-    roberta_positive, roberta_negative) ~ pm25 | local_timebin + STATE_NAME + username,
-  data = celebrities,
+  c(vader_compound, 
+    roberta_positive, roberta_negative, 
+    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour,
+  data = full_data %>% filter(celebrity_._pop_culture > 0.5),
   cluster = "NAME"
 ) |>
   etable()
 
-# arts and culture -- too few observations
+# arts and culture
 feols(
-  c(bertweet_positive, bertweet_negative, vader_compound, 
-    roberta_positive, roberta_negative) ~ pm25 | local_timebin + State_Code,
-  data = arts_culture
+  c(vader_compound, 
+    roberta_positive, roberta_negative, 
+    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour,
+  data = full_data %>% filter(arts_._culture > 0.5),
+  cluster = "NAME"
 ) |>
   etable()
 
 # food
 feols(
-  c(bertweet_positive, bertweet_negative, vader_compound, 
-    roberta_positive, roberta_negative) ~ pm25 | local_timebin + State_Code,
-  data = food
+  c(vader_compound, 
+    roberta_positive, roberta_negative, 
+    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour,
+  data = full_data %>% filter(food_._dining > 0.5),
+  cluster = "NAME"
 ) |>
   etable()
 
-# news and social concern -- not significant
+# news and social concern
 feols(
-  c(bertweet_positive, bertweet_negative, vader_compound, 
-    roberta_positive, roberta_negative) ~ pm25 | local_timebin + State_Code,
-  data = news_concern
+  c(vader_compound, 
+    roberta_positive, roberta_negative, 
+    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour,
+  data = full_data %>% filter(news_._social_concern > 0.5),
+  cluster = "NAME"
 ) |>
   etable()
 
 # travel
 feols(
-  c(bertweet_positive, bertweet_negative, vader_compound, 
-    roberta_positive, roberta_negative) ~ pm25 | local_timebin + State_Code,
-  data = travel
+  c(vader_compound, 
+    roberta_positive, roberta_negative, 
+    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour,
+  data = full_data %>% filter(travel_._adventure > 0.5),
+  cluster = "NAME"
+) |>
+  etable()
+
+# diaries and daily life
+feols(
+  c(vader_compound, 
+    roberta_positive, roberta_negative, 
+    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour,
+  data = full_data %>% filter(diaries_._daily_life > 0.5),
+  cluster = "NAME"
+) |>
+  etable()
+
+# family
+feols(
+  c(vader_compound, 
+    roberta_positive, roberta_negative, 
+    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour,
+  data = full_data %>% filter(family > 0.5),
+  cluster = "NAME"
+) |>
+  etable()
+
+# relationships
+feols(
+  c(vader_compound, 
+    roberta_positive, roberta_negative, 
+    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + day_hour,
+  data = full_data %>% filter(relationships > 0.5),
+  cluster = "NAME"
 ) |>
   etable()
 
@@ -295,11 +339,8 @@ full_data %>% ggplot(aes(x = pm25, y = aod550)) +
   geom_point() + 
   theme_bw()
 
-polluted %>% ggplot() +
-  geom_sf(data = usa_states) +
-  geom_sf(aes(col = pm25))
 
-humans %>% 
+full_data %>% 
   st_drop_geometry() %>% 
   group_by(local_timebin) %>% 
   summarize(count = n(), pm25 = mean(pm25)) %>% 
