@@ -74,6 +74,10 @@ so2 <- st_as_sf(ecmwf[22]) %>% parse_nums() %>%
   dplyr::mutate(
     id = row_number()
   )
+wind <- st_as_sf(ecmwf[1]) %>% parse_nums() %>%
+  dplyr::mutate(
+    id = row_number()
+  )
 
 
 # Function to adjust column names
@@ -98,17 +102,22 @@ names(aod550)[names(aod550) %in% colnames] <-
 names(so2)[names(so2) %in% colnames] <- 
   rename_midnight(names(so2)[names(so2) %in% colnames])
 
+names(wind)[names(wind) %in% colnames] <- 
+  rename_midnight(names(wind)[names(wind) %in% colnames])
+
 pm25geo <- pm25
 aod550geo <- aod550
 so2geo <- so2
 temperaturegeo <- temperature
 dewpointgeo <- dewpoint
+windgeo <- wind
 
 pm25 <- pm25 %>% st_drop_geometry() %>% as_tibble()
 aod550 <- aod550 %>% st_drop_geometry() %>% as_tibble()
 so2 <- so2 %>% st_drop_geometry() %>% as_tibble()
 temperature <- temperature %>% st_drop_geometry() %>% as_tibble()
 dewpoint <- dewpoint %>% st_drop_geometry() %>% as_tibble()
+wind <- wind %>% st_drop_geometry() %>% as_tibble()
 
 create_long <- function(df, col_name) {
   df <- df %>% 
@@ -124,6 +133,7 @@ aod550 <- create_long(aod550, "aod550")
 so2 <- create_long(so2, "so2")
 temperature <- create_long(temperature, "temperature")
 dewpoint <- create_long(dewpoint, "dewpoint")
+wind <- create_long(wind, "wind")
 
 no_cores <- detectCores() - 1
 
@@ -169,6 +179,10 @@ dewpoint_interpolated <-
   split(.$id) %>% 
   future_map_dfr(process_row)
 
+wind_interpolated <- 
+  wind %>% 
+  split(.$id) %>% 
+  future_map_dfr(process_row)
 
 data <- data %>% 
   mutate(
@@ -191,22 +205,23 @@ full_data <-
       )
   )
 
-
-full_data <- full_data %>% 
+a <- full_data %>% 
   left_join(
     ., 
-    rename(aod550_interpolated, id_geo = id, time_bin = timestamp) %>% 
+    rename(wind_interpolated, id_geo = id, time_bin = timestamp) %>% 
       mutate(
         time_bin = time_bin %>% floor_date(unit = "hour") %>% as.character()
               )
-  ) %>% 
+  ) 
+
+full_data <- a %>% 
   left_join(
     ., 
     rename(so2_interpolated, id_geo = id, time_bin = timestamp) %>% 
       mutate(
         time_bin = time_bin %>% floor_date(unit = "hour") %>% as.character()
-              )
-    )
+      )
+  ) 
   
 
 full_data <- full_data %>% mutate(time_bin = floor_date(timestamp, unit = "hour"))

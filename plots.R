@@ -38,6 +38,7 @@ aod550 <- st_as_sf(ecmwf[8]) %>% parse_nums() %>%
 sf_use_s2(FALSE)
 pm25_df <- st_intersection(pm25, usa_states) %>% 
   st_transform(5070) # USA Contiguous Albers Equal Area Conic projection
+pm25_df <- st_intersection(pm25, usa_counties) 
 aod550_df <- st_intersection(aod550, usa_states) %>% 
   st_transform(5070)
 
@@ -77,10 +78,8 @@ for (col in cols) {
 }
 
 # calculate average US air pollution levels in July
-july2015avg <- pm25july %>% 
-  rowwise() %>% mutate(avg=mean(`2015-07-01`:`2015-07-31 21:00:00`)) %>% 
-  select(avg) %>% st_intersection(usa_states) %>% 
-  st_transform(5070)
+july2015avg <- pm25_df %>% 
+  rowwise() %>% mutate(avg=mean(`2015-07-01`:`2015-07-31 21:00:00`))
 
 
 ##################### PM2.5 and Aerosol Optical Depth plots ####################
