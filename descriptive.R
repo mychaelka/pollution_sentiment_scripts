@@ -151,30 +151,25 @@ scaled <- data %>% dplyr::select(date, CNTY_UNIQUE, day, day_hour, username, mai
   mutate(across(c(pm25:bertweet_negative), ~ (.-mean(.)) / sd(.)))
 
 
-# individual level, nonlinearity
-a <- feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat | CNTY_UNIQUE + date,
-  data = scaled,
-  cluster = c("CNTY_UNIQUE", "date")
-)
-
 # county level, nonlinearity
 a <- feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat | CNTY_UNIQUE + date + day,
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat + temp + precip + visibility | CNTY_UNIQUE + date + day,
   data = grouped,
-  cluster = c("CNTY_UNIQUE", "date")
+  cluster = c("CNTY_UNIQUE", "date"),
+  weights = grouped$num_tweets
 ) 
 
 # vader
-vader_coefs <- coef(a$`lhs: vader_compound`) %>% enframe()
-vader_confint <- confint(a$`lhs: vader_compound`) %>% rownames_to_column(., "name")
+vader_coefs <- coef(a$`lhs: vader_compound`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+vader_confint <- confint(a$`lhs: vader_compound`) %>% rownames_to_column(., "name") %>% 
+  filter(name != "temp" & name != "precip")
 
 interval_levels <- c("[0,5]", "(5,10]", "(10,15]", "(15,20]", "(20,25]", "(25,30]",
                      "(30,35]", "(35,40]", "(40,45]", "(45,50]", "(50,55]", 
                      "(55,60]", "(60,65]", "(65,70]", "(70,Inf]")
 
 # smoothed CIs
-vader_coefs <- vader_coefs %>%
+vader_coefs <- vader_coefs %>%  
   rename_intervals() %>% 
   inner_join(vader_confint %>% rename_intervals(), by = c("name", "intervals")) %>%
   mutate(intervals = factor(intervals, levels = interval_levels)) %>% 
@@ -231,8 +226,9 @@ grid.arrange(vader_line_plot, hist_plot, ncol = 1, heights=c(3,1))
 
 
 # ROBERTA
-roberta_pos_coefs <- coef(a$`lhs: roberta_positive`) %>% enframe()
-roberta_pos_confint <- confint(a$`lhs: roberta_positive`) %>% rownames_to_column(., "name")
+roberta_pos_coefs <- coef(a$`lhs: roberta_positive`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+roberta_pos_confint <- confint(a$`lhs: roberta_positive`) %>% rownames_to_column(., "name") %>% 
+  filter(name != "temp" & name != "precip")
 
 roberta_pos_coefs <- roberta_pos_coefs %>% 
   rename_intervals() %>% 
@@ -251,8 +247,9 @@ roberta_pos_coefs <- roberta_pos_coefs %>%
     smooth_97.5 = predict(loess_fit_upper, intervals_numeric)
   )
 
-roberta_neg_coefs <- coef(a$`lhs: roberta_negative`) %>% enframe()
-roberta_neg_confint <- confint(a$`lhs: roberta_negative`) %>% rownames_to_column(., "name")
+roberta_neg_coefs <- coef(a$`lhs: roberta_negative`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+roberta_neg_confint <- confint(a$`lhs: roberta_negative`) %>% rownames_to_column(., "name") %>% 
+  filter(name != "temp" & name != "precip")
 
 roberta_neg_coefs <- roberta_neg_coefs %>% 
   rename_intervals() %>% 
@@ -282,6 +279,7 @@ roberta_line_plot <-
   geom_line(aes(y = smooth_97.5), alpha = 0.5, color = "grey") +
   theme_bw() +
   xlab(NULL) +
+  ylim(-0.9, 0.91) +
   ylab("SD change in sentiment (RoBERTa)") +
   geom_smooth(data=roberta_pos_coefs, se=FALSE, aes(x=intervals, y=smooth_value, group=1, col='positive')) +
   geom_ribbon(data=roberta_pos_coefs, aes(ymin = smooth_2.5, ymax = smooth_97.5), fill="darkgreen", alpha=0.1) +
@@ -296,8 +294,9 @@ roberta_line_plot <-
 grid.arrange(roberta_line_plot, hist_plot, ncol = 1, heights=c(3,1))
 
 # BERTWEET
-bertweet_pos_coefs <- coef(a$`lhs: bertweet_positive`) %>% enframe()
-bertweet_pos_confint <- confint(a$`lhs: bertweet_positive`) %>% rownames_to_column(., "name")
+bertweet_pos_coefs <- coef(a$`lhs: bertweet_positive`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+bertweet_pos_confint <- confint(a$`lhs: bertweet_positive`) %>% rownames_to_column(., "name") %>% 
+  filter(name != "temp" & name != "precip")
 
 bertweet_pos_coefs <- bertweet_pos_coefs %>% 
   rename_intervals() %>% 
@@ -316,8 +315,9 @@ bertweet_pos_coefs <- bertweet_pos_coefs %>%
     smooth_97.5 = predict(loess_fit_upper, intervals_numeric)
   )
 
-bertweet_neg_coefs <- coef(a$`lhs: bertweet_negative`) %>% enframe()
-bertweet_neg_confint <- confint(a$`lhs: bertweet_negative`) %>% rownames_to_column(., "name")
+bertweet_neg_coefs <- coef(a$`lhs: bertweet_negative`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+bertweet_neg_confint <- confint(a$`lhs: bertweet_negative`) %>% rownames_to_column(., "name") %>% 
+  filter(name != "temp" & name != "precip")
 
 bertweet_neg_coefs <- bertweet_neg_coefs %>% 
   rename_intervals() %>% 
@@ -347,6 +347,7 @@ bertweet_line_plot <-
   geom_line(aes(y = smooth_97.5), alpha = 0.5, color = "grey") +
   theme_bw() +
   xlab(NULL) +
+  ylim(-0.9, 0.91) +
   ylab("SD change in sentiment (BERTweet)") +
   geom_smooth(data=bertweet_pos_coefs, se=FALSE, aes(x=intervals, y=smooth_value, group=1, col='positive')) +
   geom_ribbon(data=bertweet_pos_coefs,aes(ymin=smooth_2.5, ymax=smooth_97.5), fill="darkgreen", alpha=0.1) +
