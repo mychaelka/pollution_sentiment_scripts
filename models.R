@@ -59,21 +59,9 @@ all_bots <- rbindlist(list(bots, day_bots)) %>%
   drop_na() %>% 
   mutate(across(c(pm25:bertweet_negative), ~ (.-mean(.)) / sd(.)))
 
+
 data <- full_data %>% filter(!(username %in% all_bots$username))
-
 rm(bot_usernames, day_bot_usernames, bots, day_bots)
-
-# night data
-night <- data %>% filter(lubridate::hour(local_time) >= 22 | 
-                                lubridate::hour(local_time) <= 6) %>% 
-  dplyr::select(date, CNTY_UNIQUE, day, day_hour, username, main_label, 
-                pm25_cat, pm25, aod550, wind_x, wind_y, temperature, dewpoint, clouds, 
-                precipitation, visibility,
-                vader_compound, roberta_positive,
-                roberta_negative, bertweet_positive,
-                bertweet_negative) %>%
-  drop_na() %>% 
-  mutate(across(c(pm25:bertweet_negative), ~ (.-mean(.)) / sd(.)))
 
 # standardize data
 scaled <- data %>% dplyr::select(date, CNTY_UNIQUE, day, day_hour, username, main_label, 
@@ -134,16 +122,74 @@ ggplot(counts_negative, aes(roberta_negative_cat, bertweet_negative_cat, fill = 
   labs(x = "Roberta negative", y = "Bertweet negative", fill = "Value")
 
 
-## Create binary sentiment measures from roberta and bertweet
-
-
 ### MODELS
-#save(full_data, data, all_bots, night, scaled, file="../data/models.RData")
+#save(full_data, data, all_bots, scaled, file="../data/models.RData")
 load("../data/models.RData")
 
 #### GROUPED BY COUNTY
-grouped <- data %>% group_by(CNTY_UNIQUE, date) %>% 
-  summarize(num_tweets=n(), pm25=median(pm25), temp=median(temperature), 
+grouped <- data %>%  
+  group_by(CNTY_UNIQUE, date) %>% 
+  summarize(num_tweets=n(), pm25=median(pm25), temp_max=max(temperature), temp_min=min(temperature), temp_med=median(temperature),
+            wind_x=median(wind_x), wind_y=median(wind_y), dewpoint=median(dewpoint), 
+            aod550=median(aod550), precip=median(precipitation), clouds=median(clouds),
+            visibility=median(visibility),
+            vader_compound=median(vader_compound),
+            roberta_positive=median(roberta_positive),
+            roberta_negative=median(roberta_negative),
+            bertweet_positive=median(bertweet_positive),
+            bertweet_negative=median(bertweet_negative)) %>% 
+  mutate(pm25_cat = cut(pm25, breaks = c(seq(from = 0, to = 70, by = 5), Inf), include.lowest = TRUE)) %>% 
+  mutate(across(c(pm25:bertweet_negative), ~ (. -mean(.)) / sd(.))) 
+
+grouped$day <- as.POSIXlt(grouped$date)$wday
+
+## baseline, weight by number of tweets / population
+feols(
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temp_med + I(temp_med^2) + precip + visibility | CNTY_UNIQUE + date + day,
+  data = grouped,
+  cluster = c("CNTY_UNIQUE", "date"),
+  weights = grouped$num_tweets
+) |>
+  etable()
+
+
+# nonlinear 
+feols(
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat + temp_med + I(temp_med^2) + precip + visibility | CNTY_UNIQUE + date,
+  data = grouped,
+  cluster = c("CNTY_UNIQUE", "date"),
+  weights = grouped$num_tweets
+) |>
+  etable()
+
+#### INDIVIDUAL LEVEL
+## County + date + username, cluster by county and date
+feols(
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date + username,
+  data = scaled,
+  cluster = c("CNTY_UNIQUE", "date")
+) |>
+  etable()
+
+# County + date + username, Conley SE 
+#feols(
+#  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature | CNTY_UNIQUE + date + username,
+#  data = scaled,
+#  vcov = conley(100)
+#) |>
+#  etable()
+
+## County + date + username + topic, cluster by county and date
+feols(
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date + username + main_label,
+  data = scaled,
+  cluster = c("CNTY_UNIQUE", "date")
+) |>
+  etable()
+
+# bots -- placebo test, exclude posts related to weather (category news and social concern)
+grouped_bots <- all_bots %>% group_by(CNTY_UNIQUE, date) %>% 
+  summarize(num_tweets=n(), pm25=median(pm25), temp_med=median(temperature), 
             wind_x=median(wind_x), wind_y=median(wind_y), dewpoint=median(dewpoint), 
             aod550=median(aod550), precip=median(precipitation), clouds=median(clouds),
             visibility=median(visibility),
@@ -155,161 +201,27 @@ grouped <- data %>% group_by(CNTY_UNIQUE, date) %>%
   mutate(pm25_cat = cut(pm25, breaks = c(seq(from = 0, to = 70, by = 5),Inf), include.lowest = TRUE)) %>% 
   mutate(across(c(pm25:bertweet_negative), ~ (.-mean(.)) / sd(.)))
 
-grouped$day <- as.POSIXlt(grouped$date)$wday
+grouped_bots$day <- as.POSIXlt(grouped_bots$date)$wday
 
-
-### lagged pm??
-#library(plm)
-#grouped_plm <- pdata.frame(grouped, index=c("CNTY_UNIQUE", "date"))
-#grouped_plm <- transform(grouped_plm, lagged_pm=lag(pm25, 1))
-#grouped_plm$day <- as.POSIXlt(grouped_plm$date)$wday
-
-## baseline, weight by number of tweets / population
 feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temp + precip + visibility | CNTY_UNIQUE + date + day,
-  data = grouped,
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temp_med + I(temp_med^2) + precip + visibility | CNTY_UNIQUE + date + day,
+  data = grouped_bots,
   cluster = c("CNTY_UNIQUE", "date"),
-  weights = grouped$num_tweets
+  weights = grouped_bots$num_tweets
 ) |>
   etable()
 
-
-# nonlinear 
 feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat + temp + precip | CNTY_UNIQUE + date,
-  data = grouped,
-  cluster = c("CNTY_UNIQUE", "date")
-) |>
-  etable()
-
-#### INDIVIDUAL LEVEL
-## County + date, cluster by county and date
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + precipitation + visibility | CNTY_UNIQUE + date,
-  data = scaled,
-  cluster = c("CNTY_UNIQUE", "date")
-) |>
-  etable()
-
-
-## County + date + username, cluster by county and date
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + precipitation | CNTY_UNIQUE + date + username,
-  data = scaled,
-  cluster = c("CNTY_UNIQUE", "date")
-) |>
-  etable()
-
-# County + date + username + hour, cluster by county and date
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature | CNTY_UNIQUE + date + day_hour + username,
-  data = scaled,
-  cluster = c("CNTY_UNIQUE", "date")
-) |>
-  etable()
-
-# County + date + username, Conley SE 
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature | CNTY_UNIQUE + date + username,
-  data = scaled,
-  vcov = conley(100)
-) |>
-  etable()
-
-## County + date + hour + username + topic, cluster by county and date
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature | CNTY_UNIQUE + date + day_hour + username + main_label,
-  data = scaled,
-  cluster = c("CNTY_UNIQUE", "date")
-) |>
-  etable()
-
-
-##### ROBUSTNESS CHECKS
-# sentiment during night -- robustness check to filter out the visibility problem
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature | CNTY_UNIQUE + date,
-  data = night,
-  cluster = c("CNTY_UNIQUE", "date")
-) |>
-  etable()
-
-# night in grouped data - does not work
-grouped_night <- data %>% filter(lubridate::hour(local_time) >= 22 | 
-                             lubridate::hour(local_time) <= 6) %>% 
-  group_by(CNTY_UNIQUE, date) %>% 
-  summarize(num_tweets=n(), pm25=median(pm25), temp=median(temperature),
-            vader_compound=median(vader_compound),
-            roberta_positive=median(roberta_positive),
-            roberta_negative=median(roberta_negative),
-            bertweet_positive=median(bertweet_positive),
-            bertweet_negative=median(bertweet_negative)) %>% 
-  mutate(pm25_cat = cut(pm25, breaks = c(seq(from = 0, to = 70, by = 5),Inf), include.lowest = TRUE)) %>% 
-  mutate(across(c(pm25:bertweet_negative), ~ (.-mean(.)) / sd(.)))
-
-grouped_night$day <- as.POSIXlt(grouped_night$date)$wday
-
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temp | CNTY_UNIQUE + date + day,
-  data = grouped_night,
-  cluster = c("CNTY_UNIQUE", "date"),
-  weights = grouped_night$num_tweets
-) |>
-  etable()
-
-
-#### VISIBILITY - residuals from regression of aod550 on pm25?
-aod_model <- lm(aod550 ~ pm25, data = grouped)
-aod_res <- resid(aod_model)
-grouped <- grouped %>% drop_na()
-grouped$resid <- aod_res
-
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temp + resid | CNTY_UNIQUE + date + day,
-  data = grouped,
-  cluster = c("CNTY_UNIQUE", "date"),
-  weights = grouped$num_tweets
-) |>
-  etable()
-
-########
-
-
-# bots -- placebo test
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + precipitation | CNTY_UNIQUE + date,
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date + day,
   data = all_bots,
   cluster = c("CNTY_UNIQUE", "date")
 ) |>
   etable()
-
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 | CNTY_UNIQUE + date + username + main_label,
-  data = all_bots,
-  cluster = c("CNTY_UNIQUE", "date")
-) |>
-  etable()
-
-# nonlinearity -- pm25 categories
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat | CNTY_UNIQUE + date,
-  data = scaled,
-  cluster = c("CNTY_UNIQUE", "date")
-) |>
-  etable()
-
-# interaction with category
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat * main_label | CNTY_UNIQUE + date + username,
-  data = scaled
-) |>
-  etable()
-
 
 # remove wildfire counties
 data_without_california <- data %>% filter(STATE_NAME != "California") %>% 
   group_by(CNTY_UNIQUE, date) %>% 
-  summarize(num_tweets=n(), pm25=median(pm25), temp=median(temperature), 
+  summarize(num_tweets=n(), pm25=median(pm25), temp_med=median(temperature), 
             wind_x=median(wind_x), wind_y=median(wind_y), dewpoint=median(dewpoint), 
             aod550=median(aod550), precip=median(precipitation), clouds=median(clouds),
             visibility=median(visibility),
@@ -325,7 +237,7 @@ data_without_california$day <- as.POSIXlt(data_without_california$date)$wday
 
 ## baseline, weight by number of tweets / population
 feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temp + precip + visibility | CNTY_UNIQUE + date + day,
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temp_med + I(temp_med^2) + precip + visibility | CNTY_UNIQUE + date + day,
   data = data_without_california,
   cluster = c("CNTY_UNIQUE", "date"),
   weights = data_without_california$num_tweets
@@ -333,63 +245,13 @@ feols(
   etable()
 
 # individual categories
-# business and entrepreneurs
-feols(
-  c(vader_compound, 
-    roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
-  data = data %>% filter(business_._entrepreneurs > 0.5),
-  cluster = "NAME"
-) |>
-  etable()
-
-# learning and educational
-feols(
-  c(vader_compound, 
-    roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
-  data = data %>% filter(learning_._educational > 0.5),
-  cluster = "NAME"
-) |>
-  etable()
-
-# fitness and health
-feols(
-  c(vader_compound, 
-    roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
-  data = data %>% filter(fitness_._health > 0.5),
-  cluster = "NAME"
-) |>
-  etable()
-
-# sports
-feols(
-  c(vader_compound, 
-    roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
-  data = data %>% filter(sports > 0.5),
-  cluster = "NAME"
-) |>
-  etable()
-
 # celebrities
 feols(
   c(vader_compound, 
     roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
+    bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date,
   data = data %>% filter(celebrity_._pop_culture > 0.5),
-  cluster = "NAME"
-) |>
-  etable()
-
-# arts and culture
-feols(
-  c(vader_compound, 
-    roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
-  data = data %>% filter(arts_._culture > 0.5),
-  cluster = "NAME"
+  cluster = c("CNTY_UNIQUE", "date")
 ) |>
   etable()
 
@@ -397,9 +259,9 @@ feols(
 feols(
   c(vader_compound, 
     roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
+    bertweet_positive, bertweet_negative) ~  pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date,
   data = data %>% filter(food_._dining > 0.5),
-  cluster = "NAME"
+  cluster = c("CNTY_UNIQUE", "date")
 ) |>
   etable()
 
@@ -407,9 +269,9 @@ feols(
 feols(
   c(vader_compound, 
     roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
+    bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date,
   data = data %>% filter(news_._social_concern > 0.5),
-  cluster = "NAME"
+  cluster = c("CNTY_UNIQUE", "date")
 ) |>
   etable()
 
@@ -433,25 +295,6 @@ feols(
 ) |>
   etable()
 
-# family
-feols(
-  c(vader_compound, 
-    roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
-  data = data %>% filter(family > 0.5),
-  cluster = "NAME"
-) |>
-  etable()
-
-# relationships
-feols(
-  c(vader_compound, 
-    roberta_positive, roberta_negative, 
-    bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
-  data = data %>% filter(relationships > 0.5),
-  cluster = "NAME"
-) |>
-  etable()
 
 ##### SO2 AND WIND DIRECTION
 ## County + date, cluster by county
@@ -524,56 +367,3 @@ celebrities %>%
   geom_line(aes(x = local_timebin, y = count)) +
   geom_line(aes(x = local_timebin, y = pm25*100), col = "blue") +
   theme_bw(base_family = "Times") 
-
-# fixed effects plots
-# all categories except for sports
-a <- feols(vader_compound ~ pm25_cat | NAME + date + day_hour + username,
-  data = scaled
-) 
-
-coefplot(a)
-
-b <- without_sport %>% 
-  group_by(pm25_cat) %>% 
-  summarise(sentiment=mean(vader_compound),
-            n_obs = n())
-
-ggplot(full_data %>% 
-         group_by(pm25_cat) %>% 
-         summarise(sentiment=mean(vader_compound),
-                   n_obs = n()), 
-       mapping = aes(x = pm25_cat, y = sentiment)) +
-  geom_point() +
-  labs(x = 'pm2.5', y = 'sentiment') +
-  theme_minimal()
-
-
-
-## SPLIT BY LABEL
-qq <- 
-  humans %>% 
-  st_drop_geometry() %>% 
-  as_tibble() %>% 
-  dplyr::select(id,arts_._culture:youth_._student_life) %>% 
-  pivot_longer(-id) %>% 
-  group_by(id) %>% 
-  slice_max(
-    value, n=1L
-  ) %>% 
-  slice(1L) %>% 
-  ungroup() %>% 
-  dplyr::select(id, labelmax = name)
-
-humans_qq <- left_join(humans, qq, by = 'id')
-
-
-## TREATMENT FOR DID
-data_did <- data %>% 
-  group_by(lon, lat) %>% 
-  mutate(treat = ifelse(max(pm25) > 100, 1, 0)) %>% 
-  ungroup() %>% 
-  group_by(lon, lat, local_timebin) %>% 
-  mutate(time = ifelse(max(pm25) > 100, 1, 0)) %>% 
-  ungroup()
-
-summary(lm(roberta_positive ~ treat*time, data=data_did))
