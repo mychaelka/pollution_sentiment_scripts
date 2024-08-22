@@ -127,10 +127,10 @@ data$date <- as.Date(data$timestamp)
 bots <- data |>
   group_by(username, date) |>
   summarize(count = n()) |>
-  filter(count > 50) |> distinct(username)
+  filter(count > 40) |> distinct(username)
 
 
-write_csv(bots, "../data/day_bot_usernames.csv")
+write_csv(bots, "../data/bots_usernames.csv")
 bots <- data |> filter(username %in% bots$username)
 mean(bots$vader_compound)
 mean(bots$bertweet_neutral)
