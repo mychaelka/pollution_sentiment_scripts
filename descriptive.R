@@ -12,23 +12,50 @@ load("../data/models.RData")
 
 # sample characteristics
 summary(full_data$pm25)
+sd(full_data$pm25, na.rm=TRUE)
+summary(full_data$temperature)
+sd(full_data$temperature, na.rm=TRUE)
+summary(full_data$precipitation)
+sd(full_data$precipitation, na.rm=TRUE)
+summary(full_data$visibility)
+sd(full_data$visibility, na.rm=TRUE)
 summary(full_data$vader_compound)
+sd(full_data$vader_compound, na.rm=TRUE)
 summary(full_data$roberta_positive)
+sd(full_data$roberta_positive)
 summary(full_data$roberta_negative)
+sd(full_data$roberta_negative)
 summary(full_data$bertweet_positive)
+sd(full_data$bertweet_positive)
 summary(full_data$bertweet_negative)
+sd(full_data$bertweet_negative)
+
+# correlation between standardized sentiment measures
+scaled <- full_data %>% dplyr::select(vader_compound, roberta_positive,
+                                 roberta_negative, bertweet_positive,
+                                 bertweet_negative) %>% 
+  drop_na() %>% 
+  mutate(across(c(vader_compound:bertweet_negative), ~ (.-mean(.)) / sd(.)))
+
+cor(scaled)
 
 # tweets per person
 tweets_user <- full_data %>% 
+  dplyr::select(username) %>% 
+  st_drop_geometry() %>% 
   group_by(username) %>% 
   summarize(count = n())
 summary(tweets_user$count)
+sd(tweets_user$count)
 
 # tweets per county
 tweets_county <- full_data %>% 
-  group_by(NAME) %>% 
+  dplyr::select(CNTY_UNIQUE) %>% 
+  st_drop_geometry() %>% 
+  group_by(CNTY_UNIQUE) %>% 
   summarize(count = n())
 summary(tweets_county$count)
+sd(tweets_county$count)
 
 # how many tweets per each pollution bin? 
 data %>%
@@ -153,16 +180,17 @@ scaled <- data %>% dplyr::select(date, CNTY_UNIQUE, day, day_hour, username, mai
 
 # county level, nonlinearity
 a <- feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat + temp + precip + visibility | CNTY_UNIQUE + date + day,
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25_cat + temp_med + I(temp_med^2) + precip + visibility | CNTY_UNIQUE + date,
   data = grouped,
   cluster = c("CNTY_UNIQUE", "date"),
   weights = grouped$num_tweets
-) 
+)
 
 # vader
-vader_coefs <- coef(a$`lhs: vader_compound`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+vader_coefs <- coef(a$`lhs: vader_compound`) %>% enframe() %>% 
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 vader_confint <- confint(a$`lhs: vader_compound`) %>% rownames_to_column(., "name") %>% 
-  filter(name != "temp" & name != "precip")
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 
 interval_levels <- c("[0,5]", "(5,10]", "(10,15]", "(15,20]", "(20,25]", "(25,30]",
                      "(30,35]", "(35,40]", "(40,45]", "(45,50]", "(50,55]", 
@@ -203,15 +231,17 @@ vader_coefs <- bind_rows(baseline, vader_coefs)
 
 vader_line_plot <- vader_coefs %>%
   ggplot(aes(x = intervals, y = smooth_value, group = 1)) +
-  geom_smooth(se=FALSE, color = "darkgreen") +
-  geom_ribbon(aes(ymin = smooth_2.5, ymax = smooth_97.5), fill = "darkgreen", alpha = 0.1) +
+  geom_line(color = "darkblue", linewidth=1.2) +
+  geom_ribbon(aes(ymin = smooth_2.5, ymax = smooth_97.5), fill = "darkblue", alpha = 0.1) +
   geom_line(aes(y = smooth_2.5), alpha = 0.5, color = "grey") +
   geom_line(aes(y = smooth_97.5), alpha = 0.5, color = "grey") +
   geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth=1.2) +
   theme_bw() +
   xlab(NULL) +
+  ylim(-1.1, 0.91) +
   ylab("SD change in sentiment (VADER)") +
-  theme(text = element_text(size = 15))
+  theme(text = element_text(size = 15),
+        axis.text.x = element_text(angle = 90))
 
 hist_plot <- grouped %>% 
   ggplot(aes(x=pm25_cat)) + 
@@ -219,16 +249,18 @@ hist_plot <- grouped %>%
   theme_bw() + 
   xlab("Air pollution level (pm2.5)") +
   ylab("Number of tweets") +
-  theme(text=element_text(size=15))
+  theme(text=element_text(size=15),
+        axis.text.x = element_text(angle = 90))
 
 
 grid.arrange(vader_line_plot, hist_plot, ncol = 1, heights=c(3,1))
 
 
 # ROBERTA
-roberta_pos_coefs <- coef(a$`lhs: roberta_positive`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+roberta_pos_coefs <- coef(a$`lhs: roberta_positive`) %>% enframe() %>% 
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 roberta_pos_confint <- confint(a$`lhs: roberta_positive`) %>% rownames_to_column(., "name") %>% 
-  filter(name != "temp" & name != "precip")
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 
 roberta_pos_coefs <- roberta_pos_coefs %>% 
   rename_intervals() %>% 
@@ -247,9 +279,10 @@ roberta_pos_coefs <- roberta_pos_coefs %>%
     smooth_97.5 = predict(loess_fit_upper, intervals_numeric)
   )
 
-roberta_neg_coefs <- coef(a$`lhs: roberta_negative`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+roberta_neg_coefs <- coef(a$`lhs: roberta_negative`) %>% enframe() %>% 
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 roberta_neg_confint <- confint(a$`lhs: roberta_negative`) %>% rownames_to_column(., "name") %>% 
-  filter(name != "temp" & name != "precip")
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 
 roberta_neg_coefs <- roberta_neg_coefs %>% 
   rename_intervals() %>% 
@@ -273,20 +306,21 @@ roberta_neg_coefs <- bind_rows(baseline, roberta_neg_coefs)
 
 roberta_line_plot <- 
   roberta_neg_coefs %>% ggplot(aes(x=intervals, y=smooth_value, group=1)) +
-  geom_smooth(se=FALSE, aes(color='negative')) +
+  geom_line(aes(color='negative'), linewidth=1.2) +
   geom_ribbon(aes(ymin = smooth_2.5, ymax = smooth_97.5), fill="darkred", alpha=0.1) +
   geom_line(aes(y = smooth_2.5), alpha = 0.5, color = "grey") +
   geom_line(aes(y = smooth_97.5), alpha = 0.5, color = "grey") +
   theme_bw() +
   xlab(NULL) +
-  ylim(-0.9, 0.91) +
+  ylim(-1.1, 0.91) +
   ylab("SD change in sentiment (RoBERTa)") +
-  geom_smooth(data=roberta_pos_coefs, se=FALSE, aes(x=intervals, y=smooth_value, group=1, col='positive')) +
+  geom_line(data=roberta_pos_coefs, aes(x=intervals, y=smooth_value, group=1, col='positive'), linewidth=1.2) +
   geom_ribbon(data=roberta_pos_coefs, aes(ymin = smooth_2.5, ymax = smooth_97.5), fill="darkgreen", alpha=0.1) +
   geom_line(data=roberta_pos_coefs, aes(x=intervals, y=smooth_2.5), alpha=0.5, col="grey") +
   geom_line(data=roberta_pos_coefs, aes(x=intervals, y=smooth_97.5), alpha=0.5, col="grey") +
   geom_hline(yintercept=0, linetype="dashed", color="black", linewidth=1.2) +
-  theme(text=element_text(size=15), legend.position = c(0.15, 0.10)) +
+  theme(text=element_text(size=15), legend.position = c(0.15, 0.10),
+        axis.text.x = element_text(angle = 90)) +
   scale_color_manual(name='Sentiment polarity',
                      breaks=c('negative', 'positive'),
                      values=c('negative'='darkred', 'positive'='darkgreen'))
@@ -294,9 +328,10 @@ roberta_line_plot <-
 grid.arrange(roberta_line_plot, hist_plot, ncol = 1, heights=c(3,1))
 
 # BERTWEET
-bertweet_pos_coefs <- coef(a$`lhs: bertweet_positive`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+bertweet_pos_coefs <- coef(a$`lhs: bertweet_positive`) %>% enframe() %>% 
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 bertweet_pos_confint <- confint(a$`lhs: bertweet_positive`) %>% rownames_to_column(., "name") %>% 
-  filter(name != "temp" & name != "precip")
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 
 bertweet_pos_coefs <- bertweet_pos_coefs %>% 
   rename_intervals() %>% 
@@ -315,9 +350,10 @@ bertweet_pos_coefs <- bertweet_pos_coefs %>%
     smooth_97.5 = predict(loess_fit_upper, intervals_numeric)
   )
 
-bertweet_neg_coefs <- coef(a$`lhs: bertweet_negative`) %>% enframe() %>% filter(name != "temp" & name != "precip")
+bertweet_neg_coefs <- coef(a$`lhs: bertweet_negative`) %>% enframe() %>% 
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 bertweet_neg_confint <- confint(a$`lhs: bertweet_negative`) %>% rownames_to_column(., "name") %>% 
-  filter(name != "temp" & name != "precip")
+  filter(name != "temp_med" & name != "I(temp_med^2)" & name != "precip" & name != "visibility")
 
 bertweet_neg_coefs <- bertweet_neg_coefs %>% 
   rename_intervals() %>% 
@@ -341,20 +377,21 @@ bertweet_neg_coefs <- bind_rows(baseline, bertweet_neg_coefs)
 
 bertweet_line_plot <- 
   bertweet_neg_coefs %>% ggplot(aes(x=intervals, y=smooth_value, group=1)) +
-  geom_smooth(se=FALSE, aes(color='negative')) +
+  geom_line(aes(color='negative'), linewidth=1.2) +
   geom_ribbon(aes(ymin=smooth_2.5, ymax=smooth_97.5), fill="darkred", alpha=0.1) +
   geom_line(aes(y = smooth_2.5), alpha = 0.5, color = "grey") +
   geom_line(aes(y = smooth_97.5), alpha = 0.5, color = "grey") +
   theme_bw() +
   xlab(NULL) +
-  ylim(-0.9, 0.91) +
+  ylim(-1.1, 0.91) +
   ylab("SD change in sentiment (BERTweet)") +
-  geom_smooth(data=bertweet_pos_coefs, se=FALSE, aes(x=intervals, y=smooth_value, group=1, col='positive')) +
+  geom_line(data=bertweet_pos_coefs, aes(x=intervals, y=smooth_value, group=1, col='positive'), linewidth=1.2) +
   geom_ribbon(data=bertweet_pos_coefs,aes(ymin=smooth_2.5, ymax=smooth_97.5), fill="darkgreen", alpha=0.1) +
   geom_line(data=bertweet_pos_coefs,aes(x=intervals, y=smooth_2.5), alpha=0.5, col="grey") +
   geom_line(data=bertweet_pos_coefs,aes(x=intervals, y=smooth_97.5), alpha=0.5, col="grey") +
   geom_hline(yintercept=0, linetype="dashed", color="black", linewidth=1.2) +
-  theme(text=element_text(size=15), legend.position = c(0.15, 0.10)) +
+  theme(text=element_text(size=15), legend.position = c(0.15, 0.10),
+        axis.text.x = element_text(angle = 90)) +
   scale_color_manual(name='Sentiment polarity',
                      breaks=c('negative', 'positive'),
                      values=c('negative'='darkred', 'positive'='darkgreen'))
@@ -379,18 +416,6 @@ full_data %>%
 
 # pm25 vs. sentiment
 full_data %>% 
-  drop_na() %>% 
-  filter(pm25 < 75) %>% 
-  mutate(int_pm=round(pm25)) %>% 
-  group_by(int_pm) %>% 
-  summarize(vader = mean(vader_compound),
-            roberta_pos = mean(roberta_positive),
-            bertweet_pos = mean(bertweet_positive)) %>% 
-  ggplot(aes(x=int_pm, y=roberta_pos)) +
-  geom_line()
-
-# same but during the night
-night %>% 
   drop_na() %>% 
   filter(pm25 < 75) %>% 
   mutate(int_pm=round(pm25)) %>% 
@@ -719,29 +744,3 @@ county_level %>%
 
 ggsave(filename = "../figs/paper/max_pollution.png", width = 11, 
        height = 7, device='png', dpi=700, bg = "white")
-
-
-#### WEATHER
-file_dir <- "../data/weather/PRISM_tmean_stable_4kmD2_20150701_20150731_bil/" 
-files <- list.files(path = file_dir, pattern = "PRISM_tmean_stable_4kmD2_201507\\d{2}_bil.bil$",
-                    full.names = TRUE)
-
-# empty list to store data
-data_list <- list()
-
-for (file in files) {
-  raster_data <- raster(file)
-  raster_df <- as.data.frame(raster_data, xy = TRUE)
-  
-  # Extract the date from the file name
-  date <- substr(basename(file), 28, 35)  # Adjust the position based on your file name structure
-  date <- as.Date(date, format = "%Y%m%d")
-  raster_df$date <- date
-  
-  data_list[[length(data_list) + 1]] <- raster_df
-}
-
-big_table <- do.call(rbind, data_list)
-
-# View the resulting data frame
-head(big_table)
