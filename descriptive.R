@@ -11,14 +11,19 @@ library(gridExtra)
 load("../data/models.RData")
 
 # sample characteristics
-summary(full_data$pm25)
-sd(full_data$pm25, na.rm=TRUE)
-summary(full_data$temperature)
-sd(full_data$temperature, na.rm=TRUE)
-summary(full_data$precipitation)
-sd(full_data$precipitation, na.rm=TRUE)
-summary(full_data$visibility)
-sd(full_data$visibility, na.rm=TRUE)
+cnty_aggr <- full_data %>% group_by(CNTY_UNIQUE, date) %>% summarize(pm25=median(pm25),
+                                                                     temp=median(temperature),
+                                                                     precip=median(precipitation),
+                                                                     visibility=median(visibility))
+summary(cnty_aggr$pm25)
+sd(cnty_aggr$pm25, na.rm=TRUE)
+summary(cnty_aggr$temp)
+sd(cnty_aggr$temp, na.rm=TRUE)
+summary(cnty_aggr$precip)
+sd(cnty_aggr$precip, na.rm=TRUE)
+summary(cnty_aggr$visibility)
+sd(cnty_aggr$visibility, na.rm=TRUE)
+
 summary(full_data$vader_compound)
 sd(full_data$vader_compound, na.rm=TRUE)
 summary(full_data$roberta_positive)
@@ -63,13 +68,6 @@ data %>%
   geom_histogram(stat="count") +
   theme_bw(base_family = "Times")
 
-# relationship between #tweets and pollution
-data %>% 
-  mutate(pm25_int = floor(pm25)) %>% 
-  group_by(pm25_int) %>% 
-  summarise(count=n()) %>% 
-  ggplot(aes(x=pm25_int, y=count)) +
-  geom_line()
 
 # how many users per each pollution bin?
 data %>%
@@ -86,7 +84,6 @@ data <- data %>%
     pm25_cat = cut(pm25, breaks = c(seq(from = 0, to = 100, by = 10),Inf), include.lowest = TRUE)
   )
 
-
 # standardize 
 scaled <- data %>% dplyr::select(date, NAME, day, day_hour, username, main_label, 
                                  pm25_cat, pm25,
@@ -96,57 +93,65 @@ scaled <- data %>% dplyr::select(date, NAME, day, day_hour, username, main_label
   drop_na() %>% 
   mutate(across(c(pm25:bertweet_negative), ~ (.-mean(.)) / sd(.)))
 
-
-##### REGRESSION TEST
-## County + date + username + topic, cluster by county
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 | NAME + date + username,
-  data = scaled,
-  cluster = c("NAME")
-) |>
-  etable()
-#####
-
 # positive 
 pos <- scaled %>%
        group_by(day) %>% 
-       summarize(vader = mean(vader_compound),
-                 roberta_pos = mean(roberta_positive),
-                 bertweet_pos = mean(bertweet_positive)) %>%
+       summarize(RoBERTa = mean(roberta_positive),
+                 BERTweet = mean(bertweet_positive),
+                 VADER = mean(vader_compound)) %>%
        melt(id.vars = "day") %>% 
        mutate(lag=lag(value)) %>% 
        mutate(diff=value-lag)
 
-pos_plot <- scaled %>%
-  group_by(day) %>% 
-  summarize(vader = mean(vader_compound),
-            roberta_pos = mean(roberta_positive),
-            bertweet_pos = mean(bertweet_positive)) %>%
-  melt(id.vars = "day") %>% 
-  ggplot(aes(x=day, y=value, col=variable)) + 
-  geom_line(linewidth=1) +
-  geom_point(linewidth=2) +
-  geom_point() +
-  theme_bw(base_family = "Times")
-
 # negative
 neg <- scaled %>%
   group_by(day) %>% 
-  summarize(roberta_neg = mean(roberta_negative),
-            bertweet_neg = mean(bertweet_negative)) %>%
+  summarize(RoBERTa = mean(roberta_negative),
+            BERTweet = mean(bertweet_negative)) %>%
   melt(id.vars = "day") %>% 
   mutate(lag=lag(value)) %>% 
   mutate(diff=value-lag)
 
-neg_plot <- neg %>% 
-  ggplot(aes(x=day, y=value, col=variable)) + 
+
+pos_plot <- pos %>%
+  mutate(day = factor(day, levels = c(0, 1, 2, 3, 4, 5, 6),
+                      labels = c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"))) %>% 
+  ggplot(aes(x=day, y=value, group=variable, col=variable)) + 
   geom_line(linewidth=1) +
-  geom_point(linewidth=2) +
-  geom_point() +
-  theme_bw(base_family = "Times")
+  geom_point(aes(shape=variable), size=3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray", linewidth=1.1) +
+  theme_minimal(base_family = "Times") +
+  scale_color_manual(name='Sentiment measure',
+                     breaks=c('RoBERTa', 'BERTweet', 'VADER'),
+                     values=c('RoBERTa' = 'darkgreen', 'BERTweet'='chartreuse2', 'VADER'= 'blue')) +
+  theme(text=element_text(size=20),
+        axis.text.x = element_text(size=16),
+        axis.text.y = element_text(size=16)) +
+  guides(shape = "none") +
+  ylim(-0.1, 0.1) +
+  xlab(NULL) +
+  ylab("Mean standardized sentiment") 
 
-grid.arrange(pos_plot, neg_plot, nrow = 1)
+neg_plot <- neg %>% 
+  mutate(day = factor(day, levels = c(0, 1, 2, 3, 4, 5, 6),
+                      labels = c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"))) %>% 
+  ggplot(aes(x=day, y=value, group=variable, col=variable)) + 
+  geom_line(linewidth=1) +
+  geom_point(aes(shape=variable), size=3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray", linewidth=1.1) +
+  theme_minimal(base_family = "Times") +
+  scale_color_manual(name='Sentiment measure',
+                     breaks=c('RoBERTa', 'BERTweet'),
+                     values=c('RoBERTa' = 'darkred', 'BERTweet'='magenta')) +
+  theme(text=element_text(size=20),
+        axis.text.x = element_text(size=16),
+        axis.text.y = element_text(size=16)) +
+  guides(shape = "none") +
+  ylim(-0.1, 0.1) +
+  xlab(NULL) +
+  ylab(NULL) 
 
+grid.arrange(pos_plot, neg_plot, nrow = 1, widths=c(1,1))
 
 
 # regression coefficients and CI per pollution bin 
@@ -400,20 +405,6 @@ grid.arrange(bertweet_line_plot, hist_plot, ncol = 1, heights=c(3,1))
 
 
 
-# histogram of pollution bins
-full_data %>%
-  ggplot(aes(x=pm25_cat)) + 
-  geom_histogram(stat="count") +
-  theme_bw(base_family = "Times")
-
-# mean sentiment by pollution bin 
-full_data %>%
-  group_by(pm25_cat) %>%
-  summarize(mean_sentiment=mean(vader_compound)) %>% 
-  ggplot(aes(x=pm25_cat, y=mean_sentiment)) + 
-  geom_point() +
-  theme_bw(base_family = "Times")
-
 # pm25 vs. sentiment
 full_data %>% 
   drop_na() %>% 
@@ -432,15 +423,18 @@ full_data %>%
 usa_counties <- st_read("../data/USA_shapefiles/counties/") |>
   dplyr::select(NAME, STATE_NAME, POP2010) |>
   filter(STATE_NAME != "Alaska") |>
-  filter(STATE_NAME != "Hawaii")
+  filter(STATE_NAME != "Hawaii") |> 
+  mutate(CNTY_UNIQUE=paste(usa_counties$NAME, usa_counties$STATE_NAME))
 
 # county-level aggregation
+# we want mean because this is aggregated for the whole month, but in the models we use median
 county_level <- data %>% 
   drop_na %>% 
-  mutate(across(c(vader_compound:bertweet_negative), ~ scale(.))) %>% 
-  group_by(NAME, STATE_NAME) %>% 
+  group_by(CNTY_UNIQUE) %>% 
   summarise(num_tweets=n(),
            mean_pollution=mean(pm25, 
+                               na.rm=TRUE),
+           median_pollution=median(pm25, 
                                na.rm=TRUE),
            max_pollution=max(pm25,
                              na.rm=TRUE),
@@ -456,7 +450,7 @@ county_level <- data %>%
                                  na.rm=TRUE)) %>% 
   ungroup() %>% 
   left_join(usa_counties, ., 
-            by=c("NAME" = "NAME", "STATE_NAME" = "STATE_NAME")) %>% 
+            by=c("CNTY_UNIQUE" = "CNTY_UNIQUE")) %>% 
   mutate(tweets_pc=num_tweets/POP2010)
 
 # how many US counties exceed the WHO limit for long-term exposure to pm2.5?
@@ -488,8 +482,8 @@ county_level %>%
     legend.justification = c(0, 0),
     legend.position = "bottom",
     legend.box = "horizontal",
-    legend.title = element_text(size = 13),
-    legend.key.size = unit(1, 'cm')
+    legend.title = element_text(size = 15),
+    legend.key.size = unit(1.5, 'cm')
   )
 ggsave(filename = "../figs/paper/tweets_per_county.png", width = 11, 
        height = 7, device='png', dpi=700, bg = "white")
@@ -539,36 +533,11 @@ usa_states %>%
 ggsave(filename = "../figs/paper/tweet_distribution_bots.png", width = 11, 
        height = 7, device='png', dpi=700, bg = "white")
 
-### distribution over grid -- takes a long time
-us_grid <- usa_states %>% st_make_grid(n=c(100, 100))
-grid_map <- st_intersection(usa_states, us_grid) %>% 
-  st_as_sf() %>% 
-  mutate(grid_id = 1:n())
-
-tweets_per_grid <- grid_map %>%
-  st_transform(5070) %>% 
-  st_join(gps_data %>% 
-            st_transform(5070)) %>% 
-  group_by(grid_id) %>% 
-  summarize(total=sum(!is.na(username)))
-
-ggplot() +
-  geom_sf(data=tweets_per_grid, aes(fill=total), color=NA) +
-  geom_sf(data=usa_counties, size=0.2) + 
-  scale_fill_viridis_c(
-    option="G",
-    direction=-1,
-    na.value = "white",
-    guide = guide_colourbar(order = 1,
-                            title = "Tweet distribution",
-                            title.position = 'top')
-  )
-
 # mean Vader sentiment per county
 county_level %>% 
   st_transform(5070) %>% 
   ggplot(aes(fill=mean_vader)) + 
-  geom_sf(lwd=0.05) + 
+  geom_sf(lwd=0.2) + 
   theme_void() +
   coord_sf(datum = NA) +
   scale_fill_viridis_c(
@@ -576,112 +545,130 @@ county_level %>%
     na.value = "grey",
     guide = guide_colourbar(order = 1,
                             title = "Mean VADER sentiment",
-                           title.position = 'top')
+                            title.position = 'top')
   ) +
-  #scale_fill_distiller(
-  #  palette = "PiYG",
-  #  direction=1,
-  #  na.value = "white",
-  # guide = guide_colourbar(title = "Mean VADER sentiment",
-  #                          title.position = 'top')
-  #) + 
   theme(
+    text=element_text(size=15),
     legend.direction = "horizontal",
     legend.justification = c(0,0),
     legend.position = "bottom",
     legend.box = "horizontal",
-    legend.title = element_text(size = 13),
-    legend.key.size = unit(1.2, 'cm')
+    legend.title = element_text(size = 15),
+    legend.key.size = unit(1.5, 'cm')
   )
 
 ggsave(filename = "../figs/paper/mean_vader.png", width = 11, 
        height = 7, device='png', dpi=700, bg = "white")
 
-# mean positive sentiment intensity per county
+# mean roberta sentiment intensity per county
 roberta_pos <- county_level %>% 
   st_transform(5070) %>% 
   ggplot(aes(fill=mean_roberta_pos)) + 
-  geom_sf(lwd=0.05) + 
+  geom_sf(lwd=0.2) + 
   theme_void() +
   coord_sf(datum = NA) +
   scale_fill_viridis_c(
     option="magma",
     na.value = "grey",
     guide = guide_colourbar(order = 1,
-                            title = "Mean positive sentiment intensity",
+                            title = "Sentiment intensity",
                             title.position = 'top')
   ) +
   theme(
+    text=element_text(size=15),
     legend.direction = "horizontal",
-    legend.justification = c(1,0),
+    legend.justification = c(0,0),
     legend.position = "bottom",
     legend.box = "horizontal",
-    legend.title = element_text(size = 10),
-    legend.key.size = unit(1, 'cm')
+    legend.title = element_text(size = 15),
+    legend.key.size = unit(1.5, 'cm')
   )
 
-bertweet_pos <- county_level %>% 
-  st_transform(5070) %>% 
-  ggplot(aes(fill=mean_bertweet_pos)) + 
-  geom_sf(lwd=0.05) + 
-  theme_void() +
-  coord_sf(datum = NA) +
-  scale_fill_viridis_c(
-    option="magma",
-    na.value = "grey"
-  ) + 
-  theme(legend.position="none")
-
-grid.arrange(roberta_pos, bertweet_pos, nrow=1)
-
-g <- arrangeGrob(roberta_pos, bertweet_pos, nrow=1)
-ggsave(filename = "../figs/paper/mean_positive.png", plot=g, width = 15, 
-       height = 7, device='png', dpi=700, bg = "white")
-
-
-# mean negative sentiment intensity per county
 roberta_neg <- county_level %>% 
   st_transform(5070) %>% 
   ggplot(aes(fill=mean_roberta_neg)) + 
-  geom_sf(lwd=0.05) + 
+  geom_sf(lwd=0.2) + 
   theme_void() +
   coord_sf(datum = NA) +
   scale_fill_viridis_c(
     option="magma",
     na.value = "grey",
-    guide = guide_colourbar(title = "Mean negative sentiment intensity",
-                            title.position = 'top')
+    guide = guide_colourbar(title = "Sentiment intensity",
+                            title.position = 'top', alpha = 0)
   ) +
   theme(
     legend.direction = "horizontal",
-    legend.justification = c(1,0),
+    legend.justification = c(0,0),
+    legend.box = "horizontal",
+    legend.position = "bottom",
+    legend.title = element_text(size = 15, color="white"),
+    legend.text = element_text(color="white"),
+    legend.key.size = unit(1, 'cm'),
+    legend.key = element_rect(color="white")
+  )
+
+grid.arrange(roberta_pos, roberta_neg, nrow=1)
+
+g <- arrangeGrob(roberta_pos, roberta_neg, nrow=1)
+ggsave(filename = "../figs/paper/mean_roberta.png", plot=g, width = 15, 
+       height = 7, device='png', dpi=700, bg = "white")
+
+
+# mean bertweet sentiment intensity per county
+bertweet_pos <- county_level %>% 
+  st_transform(5070) %>% 
+  ggplot(aes(fill=mean_bertweet_pos)) + 
+  geom_sf(lwd=0.2) + 
+  theme_void() +
+  coord_sf(datum = NA) +
+  scale_fill_viridis_c(
+    option="magma",
+    na.value = "grey",
+    guide = guide_colourbar(title = "Sentiment intensity",
+                            title.position = 'top')
+  ) +
+  theme(
+    text=element_text(size=15),
+    legend.direction = "horizontal",
+    legend.justification = c(0,0),
     legend.position = "bottom",
     legend.box = "horizontal",
-    legend.title = element_text(size = 10),
-    legend.key.size = unit(1, 'cm')
+    legend.title = element_text(size = 15),
+    legend.key.size = unit(1.5, 'cm')
   )
 
 bertweet_neg <- county_level %>% 
   st_transform(5070) %>% 
   ggplot(aes(fill=mean_bertweet_neg)) + 
-  geom_sf(lwd=0.05) + 
+  geom_sf(lwd=0.2) + 
   theme_void() +
   coord_sf(datum = NA) +
   scale_fill_viridis_c(
     option="magma",
-    na.value = "grey"
-  ) + 
-  theme(legend.position="none")
+    na.value = "grey",
+    guide = guide_colourbar(title = "Negative sentiment intensity",
+                            title.position = 'top', alpha = 0)
+  ) +
+  theme(
+    legend.direction = "horizontal",
+    legend.justification = c(0,0),
+    legend.box = "horizontal",
+    legend.position = "bottom",
+    legend.title = element_text(size = 15, color="white"),
+    legend.text = element_text(color="white"),
+    legend.key.size = unit(1, 'cm'),
+    legend.key = element_rect(color="white")
+  )
 
-grid.arrange(roberta_neg, bertweet_neg, nrow=1)
-g <- arrangeGrob(roberta_neg, bertweet_neg, nrow=1)
-ggsave(filename = "../figs/paper/mean_negative.png", plot=g, width = 15, 
+grid.arrange(bertweet_pos, bertweet_neg, nrow=1)
+g <- arrangeGrob(bertweet_pos, bertweet_neg, nrow=1)
+ggsave(filename = "../figs/paper/mean_bertweet.png", plot=g, width = 15, 
        height = 7, device='png', dpi=700, bg = "white")
 
 
 #### POLLUTION
-ecmwf <- read_stars("../data/ECMWF/july2015_new.nc")
-pm25 <- st_as_sf(ecmwf[6]) %>% parse_nums() %>% 
+ecmwf <- read_stars("../data/ECMWF/ecmwf_july.nc")
+pm25 <- st_as_sf(ecmwf[4]) %>% parse_nums() %>% 
   mutate(across(`2015-07-01`:`2015-07-31 21:00:00`, ~.*1000000000)) %>%
   dplyr::mutate(
     id = row_number()
@@ -702,7 +689,7 @@ st_transform(5070) %>%
     direction=-1,
     na.value = "white",
     guide = guide_colourbar(order = 1,
-                            title = "Mean pm2.5 exposure",
+                            title = "Mean PM2.5 exposure",
                             title.position = 'top')
   ) + 
   theme(
@@ -710,8 +697,8 @@ st_transform(5070) %>%
     legend.justification = c(0, 0),
     legend.position = "bottom",
     legend.box = "horizontal",
-    legend.title = element_text(size = 13),
-    legend.key.size = unit(1, 'cm')
+    legend.title = element_text(size = 15),
+    legend.key.size = unit(1.5, 'cm')
   )
 
 ggsave(filename = "../figs/paper/mean_pollution.png", width = 11, 
