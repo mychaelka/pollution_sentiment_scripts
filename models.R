@@ -5,6 +5,7 @@ library(sf)
 library(readr)
 library(lubridate)
 library(data.table)
+library(Hmisc) # MASKS SUMMARIZE FROM DPLYR!!
 
 load("../data/full_data_counties.RData")
 
@@ -59,12 +60,12 @@ all_bots <- rbindlist(list(bots, day_bots)) %>%
   drop_na() %>% 
   mutate(across(c(pm25:bertweet_negative), ~ (.-mean(.)) / sd(.)))
 
-
 data <- full_data %>% filter(!(username %in% all_bots$username))
 rm(bot_usernames, day_bot_usernames, bots, day_bots)
 
 # standardize data
-scaled <- data %>% dplyr::select(date, CNTY_UNIQUE, day, day_hour, username, main_label, 
+scaled <- data %>% dplyr::select(date, NAME, STATE_NAME, 
+                                 CNTY_UNIQUE, day, day_hour, username, main_label, 
                                  lon, lat, pm25_cat, pm25, aod550, wind_x, wind_y, 
                                  temperature, dewpoint, clouds, precipitation, visibility,
                                  vader_compound, roberta_positive,
@@ -126,10 +127,11 @@ ggplot(counts_negative, aes(roberta_negative_cat, bertweet_negative_cat, fill = 
 #save(full_data, data, all_bots, scaled, file="../data/models.RData")
 load("../data/models.RData")
 
-#### GROUPED BY COUNTY
+#### GROUPED BY COUNTY --- aggregation function is median, use mean for sensitivity check?
 grouped <- data %>%  
   group_by(CNTY_UNIQUE, date) %>% 
-  summarize(num_tweets=n(), pm25=median(pm25), temp_max=max(temperature), temp_min=min(temperature), temp_med=median(temperature),
+  dplyr::summarize(num_tweets=n(), pm25=median(pm25), temp_max=max(temperature), 
+                   temp_min=min(temperature), temp_med=median(temperature),
             wind_x=median(wind_x), wind_y=median(wind_y), dewpoint=median(dewpoint), 
             aod550=median(aod550), precip=median(precipitation), clouds=median(clouds),
             visibility=median(visibility),
@@ -139,7 +141,7 @@ grouped <- data %>%
             bertweet_positive=median(bertweet_positive),
             bertweet_negative=median(bertweet_negative)) %>% 
   mutate(pm25_cat = cut(pm25, breaks = c(seq(from = 0, to = 70, by = 5), Inf), include.lowest = TRUE)) %>% 
-  mutate(across(c(pm25:bertweet_negative), ~ (. -mean(.)) / sd(.))) 
+  mutate(across(c(pm25:bertweet_negative), ~ (. -mean(.)) / sd(.))) ### counties with only one tweet will result in NA's due to zero variance
 
 grouped$day <- as.POSIXlt(grouped$date)$wday
 
@@ -165,23 +167,15 @@ feols(
 #### INDIVIDUAL LEVEL
 ## County + date + username, cluster by county and date
 feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date + username,
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date + day + username,
   data = scaled,
   cluster = c("CNTY_UNIQUE", "date")
 ) |>
   etable()
 
-# County + date + username, Conley SE 
-#feols(
-#  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature | CNTY_UNIQUE + date + username,
-#  data = scaled,
-#  vcov = conley(100)
-#) |>
-#  etable()
-
 ## County + date + username + topic, cluster by county and date
 feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date + username + main_label,
+  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date + day + username + main_label,
   data = scaled,
   cluster = c("CNTY_UNIQUE", "date")
 ) |>
@@ -211,17 +205,10 @@ feols(
 ) |>
   etable()
 
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | CNTY_UNIQUE + date + day,
-  data = all_bots,
-  cluster = c("CNTY_UNIQUE", "date")
-) |>
-  etable()
-
 # remove wildfire counties
 data_without_california <- data %>% filter(STATE_NAME != "California") %>% 
   group_by(CNTY_UNIQUE, date) %>% 
-  summarize(num_tweets=n(), pm25=median(pm25), temp_med=median(temperature), 
+  dplyr::summarize(num_tweets=n(), pm25=median(pm25), temp_med=median(temperature), 
             wind_x=median(wind_x), wind_y=median(wind_y), dewpoint=median(dewpoint), 
             aod550=median(aod550), precip=median(precipitation), clouds=median(clouds),
             visibility=median(visibility),
@@ -296,38 +283,92 @@ feols(
   etable()
 
 
-##### SO2 AND WIND DIRECTION
-## County + date, cluster by county
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ so2 | NAME + date,
-  data = scaled,
-  cluster = c("NAME")
-) |>
-  etable()
+### sizes in context
+# 2015 FIFA Women's World Cup
+soccer <- scaled %>% 
+  filter(date >= "2015-07-03") %>% 
+  filter(date <= "2015-07-11") %>% 
+  filter(main_label == "'sports'") %>% 
+  group_by(date) %>% 
+  summarize(vader = mean(vader_compound),
+            roberta_pos = mean(roberta_positive),
+            bertweet_pos = mean(bertweet_positive),
+            roberta_neg = mean(roberta_negative),
+            bertweet_neg = mean(bertweet_negative)) %>% 
+  mutate(Positive = (roberta_pos + bertweet_pos) / 2,
+         Negative = (roberta_neg + bertweet_neg) / 2) %>% 
+  dplyr::select(date, Positive, Negative) %>% 
+  melt(id.vars = 'date') 
 
-## County + date + username, cluster by county
-feols(
-  c(vader_compound, roberta_positive, roberta_negative, bertweet_positive, bertweet_negative) ~ so2 | NAME + date + username,
-  data = scaled,
-  cluster = c("NAME")
-) |>
-  etable()
+soccer %>% 
+  ggplot(aes(x=date, y=value, col=variable, group=variable)) + 
+  geom_line() +
+  theme_minimal() +
+  theme(text=element_text(size=20),
+        axis.text.x = element_text(size=16, angle = 45),
+        axis.text.y = element_text(size=16),
+        legend.position = c(0.10, 0.85)) +
+  geom_line(linewidth=1) +
+  geom_point(size=3) +
+  scale_color_manual(name='Sentiment polarity',
+                     breaks=c('Positive', 'Negative'),
+                     values=c('Negative' = 'darkred', 'Positive'='chartreuse4')) +
+  geom_vline(xintercept = as.Date("2015-07-05"), linetype='dashed') +
+  xlab(NULL) +
+  scale_x_date(breaks = seq(as.Date("2015-07-01"), as.Date("2015-07-18"), by = "1 day")) +
+  ylab("Mean standardized positive sentiment") 
+  
+
+# Kansas tornado
+tornado <- scaled %>% 
+  filter(date >= "2015-07-10") %>% 
+  filter(date <= "2015-07-20") %>% 
+  filter(str_detect(CNTY_UNIQUE, 'Kansas')) %>% 
+  group_by(date) %>% 
+  summarize(vader = mean(vader_compound),
+            roberta_pos = mean(roberta_positive),
+            bertweet_pos = mean(bertweet_positive),
+            roberta_neg = mean(roberta_negative),
+            bertweet_neg = mean(bertweet_negative)) %>% 
+  mutate(Positive = (roberta_pos + bertweet_pos) / 2,
+         Negative = (roberta_neg + bertweet_neg) / 2) %>% 
+  dplyr::select(date, Positive, Negative) %>% 
+  melt(id.vars = 'date')
+
+
+tornado %>% 
+  ggplot(aes(x=date, y=value, col=variable, group=variable)) + 
+  geom_line() +
+  theme_minimal() +
+  theme(text=element_text(size=20),
+        axis.text.x = element_text(size=15, angle = 45),
+        axis.text.y = element_text(size=16),
+        legend.position = c(0.15, 0.85)) +
+  geom_line(linewidth=1) +
+  geom_point(size=3) +
+  scale_color_manual(name='Sentiment polarity',
+                     breaks=c('Positive', 'Negative'),
+                     values=c('Negative' = 'darkred', 'Positive'='chartreuse4')) +
+  geom_vline(xintercept = as.Date("2015-07-13"), linetype='dashed') +
+  xlab(NULL) +
+  scale_x_date(breaks = seq(as.Date("2015-07-01"), as.Date("2015-07-31"), by = "1 day")) +
+  ylab("Mean standardized positive sentiment") 
 
 ##### 2SLS
 library(ivreg)
-summary(ivreg(vader_compound ~ pm25 + aod550 | wind + aod550, 
+summary(ivreg(vader_compound ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | temperature + I(temperature^2) + precipitation + visibility + wind_x + wind_y, 
       data = data))
 
-summary(ivreg(roberta_positive ~ temperature | pm25 | wind, 
+summary(ivreg(roberta_positive ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | temperature + I(temperature^2) + precipitation + visibility + wind_x + wind_y, 
               data = data))
 
-summary(ivreg(roberta_negative ~ temperature | pm25 | wind, 
+summary(ivreg(roberta_negative ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | temperature + I(temperature^2) + precipitation + visibility + wind_x + wind_y, 
               data = data))
 
-summary(ivreg(bertweet_positive ~ temperature | pm25 | wind, 
+summary(ivreg(bertweet_positive ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | temperature + I(temperature^2) + precipitation + visibility + wind_x + wind_y, 
               data = data))
 
-summary(ivreg(bertweet_negative ~ temperature | pm25 | wind, 
+summary(ivreg(bertweet_negative ~ pm25 + temperature + I(temperature^2) + precipitation + visibility | temperature + I(temperature^2) + precipitation + visibility + wind_x + wind_y, 
               data = data))
 
 
