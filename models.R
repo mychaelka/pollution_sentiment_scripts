@@ -5,7 +5,6 @@ library(sf)
 library(readr)
 library(lubridate)
 library(data.table)
-library(Hmisc) # MASKS SUMMARIZE FROM DPLYR!!
 
 load("../data/full_data_counties.RData")
 
@@ -206,7 +205,7 @@ feols(
   etable()
 
 # remove wildfire counties
-data_without_california <- data %>% filter(STATE_NAME != "California") %>% 
+data_without_california <- data %>% filter(STATE_NAME != "California") %>% filter(STATE_NAME != "Washington") %>% 
   group_by(CNTY_UNIQUE, date) %>% 
   dplyr::summarize(num_tweets=n(), pm25=median(pm25), temp_med=median(temperature), 
             wind_x=median(wind_x), wind_y=median(wind_y), dewpoint=median(dewpoint), 
